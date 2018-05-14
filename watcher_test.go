@@ -977,3 +977,31 @@ func TestOpsString(t *testing.T) {
 		}
 	}
 }
+
+func TestRace(t *testing.T) {
+	testDir, teardown := setup(t)
+	defer teardown()
+
+	w := New()
+
+	w.AddRecursive(testDir)
+	go w.Start(1 * time.Millisecond)
+	w.Wait()
+
+	go func() {
+		for range w.Event {
+		}
+	}()
+
+	for i := 0; i < 5; i++ {
+		watched := w.WatchedFiles()
+		go w.Add(testDir)
+
+		var all []string
+		for _, a := range watched {
+			all = append(all, a.Name())
+		}
+	}
+
+	w.Close()
+}

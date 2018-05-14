@@ -30,6 +30,8 @@ var (
 // of event has occurred during the watching process.
 type Op uint32
 
+type pathFilterFunc func(path, name string, info os.FileInfo) bool
+
 // Ops
 const (
 	Create Op = iota
@@ -95,6 +97,7 @@ type Watcher struct {
 	ops          map[Op]struct{}        // Op filtering.
 	ignoreHidden bool                   // ignore hidden files or not.
 	maxEvents    int                    // max sent events per cycle
+	pathFilter   pathFilterFunc
 }
 
 // New creates a new Watcher.
@@ -104,16 +107,23 @@ func New() *Watcher {
 	wg.Add(1)
 
 	return &Watcher{
-		Event:   make(chan Event),
-		Error:   make(chan error),
-		Closed:  make(chan struct{}),
-		close:   make(chan struct{}),
-		mu:      new(sync.Mutex),
-		wg:      &wg,
-		files:   make(map[string]os.FileInfo),
-		ignored: make(map[string]struct{}),
-		names:   make(map[string]bool),
+		Event:      make(chan Event),
+		Error:      make(chan error),
+		Closed:     make(chan struct{}),
+		close:      make(chan struct{}),
+		mu:         new(sync.Mutex),
+		wg:         &wg,
+		files:      make(map[string]os.FileInfo),
+		ignored:    make(map[string]struct{}),
+		names:      make(map[string]bool),
+		pathFilter: nil,
 	}
+}
+
+// SetPathFilter sets a function that can be used
+// to selectively filter which directories and files are watched.
+func (w *Watcher) SetPathFilter(f pathFilterFunc) {
+	w.pathFilter = f
 }
 
 // SetMaxEvents controls the maximum amount of events that are sent on
@@ -188,7 +198,7 @@ func (w *Watcher) list(name string) (map[string]os.FileInfo, error) {
 	fileList[name] = stat
 
 	// If it's not a directory, just return.
-	if !stat.IsDir() {
+	if !stat.IsDir() { 
 		return fileList, nil
 	}
 
@@ -201,8 +211,14 @@ func (w *Watcher) list(name string) (map[string]os.FileInfo, error) {
 	// as they aren't on the ignored list or are hidden files if ignoreHidden
 	// is set to true.
 	for _, fInfo := range fInfoList {
-		path := filepath.Join(name, fInfo.Name())
+		fname := fInfo.Name()
+		path := filepath.Join(name, fname)
 		_, ignored := w.ignored[path]
+
+		if !ignored && w.pathFilter != nil {
+			ignored = !w.pathFilter(path, fname, fInfo)
+		}
+
 		if ignored || (w.ignoreHidden && strings.HasPrefix(fInfo.Name(), ".")) {
 			continue
 		}
@@ -211,7 +227,7 @@ func (w *Watcher) list(name string) (map[string]os.FileInfo, error) {
 	return fileList, nil
 }
 
-// Add adds either a single file or directory recursively to the file list.
+// AddRecursive adds either a single file or directory recursively to the file list.
 func (w *Watcher) AddRecursive(name string) (err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -242,10 +258,18 @@ func (w *Watcher) listRecursive(name string) (map[string]os.FileInfo, error) {
 		if err != nil {
 			return err
 		}
+
+		fname := info.Name()
+
 		// If path is ignored and it's a directory, skip the directory. If it's
 		// ignored and it's a single file, skip the file.
 		_, ignored := w.ignored[path]
-		if ignored || (w.ignoreHidden && strings.HasPrefix(info.Name(), ".")) {
+
+		if !ignored && w.pathFilter != nil {
+			ignored = !w.pathFilter(path, fname, info)
+		}
+
+		if ignored || (w.ignoreHidden && strings.HasPrefix(fname, ".")) {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
@@ -349,7 +373,7 @@ func (w *Watcher) Ignore(paths ...string) (err error) {
 func (w *Watcher) WatchedFiles() map[string]os.FileInfo {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
+ 
 	return w.files
 }
 
